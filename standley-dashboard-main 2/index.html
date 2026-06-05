@@ -1,0 +1,1476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Standley — Location Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Montserrat', 'Inter', sans-serif; background: #F4F6FB; color: #060146; }
+    select, input, button, textarea { font-family: inherit; }
+    a { text-decoration: none; }
+    table { border-collapse: collapse; width: 100%; }
+    textarea { resize: vertical; }
+  </style>
+</head>
+<body>
+
+<!-- Hidden static forms for Netlify Forms to detect at build time -->
+<form name="standley-location-request" netlify netlify-honeypot="bot-field" hidden>
+  <input type="text" name="name" />
+  <input type="email" name="email" />
+  <input type="text" name="request_type" />
+  <input type="text" name="locations" />
+  <input type="text" name="effective_date" />
+  <input type="text" name="subject" />
+  <textarea name="message"></textarea>
+  <input type="text" name="bot-field" />
+</form>
+<form name="standley-change-digest" netlify netlify-honeypot="bot-field" hidden>
+  <input type="text" name="subject" />
+  <input type="text" name="total_count" />
+  <input type="text" name="accept_count" />
+  <input type="text" name="reject_count" />
+  <input type="text" name="submitted_by" />
+  <textarea name="message"></textarea>
+  <input type="text" name="bot-field" />
+</form>
+
+<div id="root"></div>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+const IG = { navy:"#060146", green:"#3FC195", teal:"#28C6CA", blue:"#19ADF2", gold:"#DBA819", white:"#FFFFFF", offwhite:"#F4F6FB", muted:"#94A3B8", border:"#E2E8F0" };
+
+// ── Change alert helpers ────────────────────────────────────────────────────
+const FIELD_PRIORITY = {
+  name:"critical", telephone:"critical", phone:"critical",
+  website:"critical", url:"critical",
+  address:"watch", address1:"watch", address2:"watch",
+  postcode:"watch", zip:"watch", city:"watch", state:"watch",
+  categories:"watch", primary_category:"watch", additional_categories:"watch",
+  openinghours:"watch", opening_hours:"watch", hours:"watch",
+  description:"info", labels:"info", attributes:"info",
+  store_code:"info", lat:"info", lng:"info",
+  tracking_telephone:"info", tracking_website_url:"info",
+  price_range:"info", ad_telephones:"info", alternative_telephones:"info",
+};
+const PRIORITY_META = {
+  critical: { label:"Critical", bg:"#FEF2F2", border:"#FECACA", badgeBg:"#FEE2E2", badgeColor:"#DC2626", dot:"#DC2626" },
+  watch:    { label:"Watch",    bg:"#FFFBEB", border:"#FDE68A", badgeBg:"#FEF9C3", badgeColor:"#854D0E", dot:"#D97706" },
+  info:     { label:"Info",     bg:"#fff",    border:"#E2E8F0", badgeBg:"#F1F5F9", badgeColor:"#475569", dot:"#94A3B8" },
+};
+const FIELD_LABELS = {
+  name:"Business Name", telephone:"Phone Number", phone:"Phone Number",
+  website:"Website URL", url:"Website URL", address:"Address",
+  address1:"Address Line 1", address2:"Address Line 2", postcode:"Postcode",
+  zip:"ZIP Code", city:"City", state:"State", categories:"Categories",
+  primary_category:"Primary Category", additional_categories:"Additional Categories",
+  openinghours:"Opening Hours", opening_hours:"Opening Hours", hours:"Opening Hours",
+  description:"Description", labels:"Labels", attributes:"Attributes",
+  store_code:"Store Code", lat:"Latitude", lng:"Longitude",
+  tracking_telephone:"Tracking Phone", tracking_website_url:"Tracking URL",
+  price_range:"Price Range", ad_telephones:"Ad Phone Numbers",
+  alternative_telephones:"Alt. Phone Numbers",
+};
+const SOURCE_META = {
+  gmb:        { label:"Google",     color:"#1D4ED8" },
+  facebook:   { label:"Facebook",   color:"#1877F2" },
+  apple_maps: { label:"Apple Maps", color:"#1C1C1E" },
+  bing:       { label:"Bing",       color:"#008373" },
+};
+const REQUEST_TYPES = [
+  "Hours Change",
+  "Address Update",
+  "Phone Number Update",
+  "Website URL Update",
+  "Temporary Closure",
+  "Store Reopening",
+  "New Location",
+  "Remove Location",
+  "Photo / Image Update",
+  "Business Description Update",
+  "Other",
+];
+
+function fieldPriority(field) {
+  return FIELD_PRIORITY[(field||"").toLowerCase().replace(/ /g,"_")] || "info";
+}
+function friendlyField(field) {
+  const f = (field||"").toLowerCase().replace(/ /g,"_");
+  return FIELD_LABELS[f] || (field||"").replace(/_/g," ").replace(/\b\w/g,c=>c.toUpperCase());
+}
+function to12Hr(t) {
+  if (!t) return "";
+  const s = String(t).trim();
+  const parts = s.split(":");
+  if (parts.length < 2) return s;
+  let h = parseInt(parts[0], 10);
+  const m = parts[1];
+  if (isNaN(h)) return s;
+  const period = h >= 12 ? "PM" : "AM";
+  let h12 = h % 12;
+  if (h12 === 0) h12 = 12;
+  if (m === "00") return h12 + " " + period;
+  return h12 + ":" + m + " " + period;
+}
+function formatDayEntry(v) {
+  // Returns a string description for one day's hours object
+  if (!v || typeof v !== "object") return "Closed";
+  if (v.status === "closed" || v.status === "not_supplied") return "Closed";
+  if (Array.isArray(v.hours)) {
+    if (v.hours.length === 0) return "Closed";
+    const ranges = v.hours
+      .filter(h => h && (h.start || h.open))
+      .map(h => to12Hr(h.start || h.open) + " – " + to12Hr(h.end || h.close))
+      .join(", ");
+    return ranges || "Closed";
+  }
+  if (v.open !== undefined && v.open !== null && v.open !== "" && v.closed !== true) {
+    return to12Hr(v.open) + " – " + to12Hr(v.close);
+  }
+  return "Closed";
+}
+function formatSpecialDate(d) {
+  // Accept ISO "YYYY-MM-DD" or a Date string and return "MMM D"
+  if (!d) return "Special";
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return String(d);
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  return months[dt.getUTCMonth()] + " " + dt.getUTCDate();
+}
+function formatHours(obj) {
+  if (!obj || typeof obj !== "object") return JSON.stringify(obj);
+
+  // Regular hours can live at root or nested under .regular
+  const regular = (typeof obj.regular === "object" && obj.regular) ? obj.regular : obj;
+
+  const dayOrder = ["mon","tue","wed","thu","fri","sat","sun"];
+  const labelMap = { mon:"Mon", tue:"Tue", wed:"Wed", thu:"Thu", fri:"Fri", sat:"Sat", sun:"Sun" };
+  const longForm = { mon:"monday", tue:"tuesday", wed:"wednesday", thu:"thursday", fri:"friday", sat:"saturday", sun:"sunday" };
+
+  const regKeys = Object.keys(regular);
+  const findKey = (short) => regKeys.find(k => {
+    const kl = k.toLowerCase();
+    return kl === short || kl === longForm[short];
+  });
+
+  const lines = [];
+  dayOrder.forEach(d => {
+    const key = findKey(d);
+    if (!key) return;
+    lines.push(labelMap[d] + ": " + formatDayEntry(regular[key]));
+  });
+
+  // Special / holiday hours — can be array or keyed object on the root
+  const specialSrc = obj.special || obj.special_hours || obj.holiday || obj.holidays || null;
+  const specialEntries = [];
+  if (Array.isArray(specialSrc)) {
+    specialSrc.forEach(s => {
+      if (!s) return;
+      const date = s.date || s.day || s.start_date;
+      specialEntries.push({ date, val: s });
+    });
+  } else if (specialSrc && typeof specialSrc === "object") {
+    Object.keys(specialSrc).forEach(k => specialEntries.push({ date: k, val: specialSrc[k] }));
+  }
+  if (specialEntries.length) {
+    specialEntries
+      .sort((a, b) => (new Date(a.date) - new Date(b.date)))
+      .forEach(e => lines.push(formatSpecialDate(e.date) + ": " + formatDayEntry(e.val)));
+  }
+
+  return lines.length ? lines.join("\n") : JSON.stringify(obj);
+}
+function looksLikeHours(val) {
+  if (!val || typeof val !== "object") return false;
+  const dayKeys = ["mon","tue","wed","thu","fri","sat","sun","monday","tuesday","wednesday","thursday","friday","saturday","sunday"];
+  const keys = Object.keys(val);
+  if (keys.some(k => dayKeys.indexOf(k.toLowerCase()) !== -1)) return true;
+  if (val.regular && typeof val.regular === "object") {
+    const inner = Object.keys(val.regular);
+    if (inner.some(k => dayKeys.indexOf(k.toLowerCase()) !== -1)) return true;
+  }
+  // Special-only payloads (rare but possible)
+  if (val.special || val.special_hours || val.holiday || val.holidays) return true;
+  return false;
+}
+function formatVal(val) {
+  if (val === null || val === undefined) return "—";
+  if (Array.isArray(val)) return val.length ? val.join(", ") : "—";
+  if (typeof val === "object") {
+    if (looksLikeHours(val)) return formatHours(val);
+    return JSON.stringify(val, null, 1);
+  }
+  return String(val);
+}
+
+// ── Data ────────────────────────────────────────────────────────────────────
+const LOCATIONS = [
+  { id:1, category:"OK", name:"Ardmore, OK",       locationId:4067961, dashboard:null },
+  { id:2, category:"OK", name:"Chickasha, OK",     locationId:4067962, dashboard:null },
+  { id:3, category:"OK", name:"Oklahoma City, OK", locationId:4067963, dashboard:null },
+  { id:4, category:"OK", name:"Enid, OK",          locationId:4067964, dashboard:null },
+  { id:5, category:"OK", name:"Broken Arrow, OK",  locationId:4067966, dashboard:null },
+  { id:6, category:"OK", name:"Lawton, OK",        locationId:4067967, dashboard:null },
+  { id:7, category:"TX", name:"Plano, TX",         locationId:null,    dashboard:null },
+  { id:8, category:"TX", name:"Richardson, TX",    locationId:null,    dashboard:null },
+  { id:9, category:"TX", name:"Richardson, TX (2)",locationId:null,    dashboard:null },
+];
+const REPORT_MAP = {};
+const LRT_REPORT_MAP = {};
+const CATEGORIES = ["All","OK","TX"];
+const CACHE_KEY = "standley-cache-v10";
+
+function cacheIsStale(ts) {
+  const cacheDate = new Date(ts);
+  const now = new Date();
+  const day = now.getDay();
+  const daysSinceMon = day === 0 ? 6 : day - 1;
+  const lastMon = new Date(now);
+  lastMon.setDate(now.getDate() - daysSinceMon);
+  lastMon.setUTCHours(20, 0, 0, 0); // 2pm CST = 20:00 UTC
+  if (lastMon > now) lastMon.setDate(lastMon.getDate() - 7);
+  return cacheDate < lastMon;
+}
+async function bl(endpoint) {
+  const res = await fetch("/.netlify/functions/brightlocal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint, method: "GET", payload: {} }),
+  });
+  return res.json();
+}
+function rmUrl(url) {
+  if (!url) return null;
+  return url.replace(/\/(summary|view|gbpa-reports)$/, "") + "/rm/view/manage-reviews";
+}
+function encodeForm(data) {
+  return Object.keys(data).map(k => encodeURIComponent(k) + "=" + encodeURIComponent(data[k])).join("&");
+}
+
+function Stars({ val, size=13 }) {
+  return (
+    <span style={{ display:"inline-flex", alignItems:"center", gap:1 }}>
+      {[1,2,3,4,5].map(i => (
+        <span key={i} style={{ color: i <= Math.round(val) ? IG.gold : "#CBD5E1", fontSize:size }}>★</span>
+      ))}
+      <span style={{ marginLeft:5, color:"#1E293B", fontWeight:700, fontSize:size }}>{parseFloat(val).toFixed(1)}</span>
+    </span>
+  );
+}
+function GBPBadge({ status }) {
+  const c = status==="Active" ? {bg:"#DCFCE7",co:"#16A34A",d:"#16A34A"}
+           : status==="Issues" ? {bg:"#FEF9C3",co:"#854D0E",d:"#CA8A04"}
+           : {bg:"#FEE2E2",co:"#991B1B",d:"#DC2626"};
+  return (
+    <span style={{ display:"inline-flex", alignItems:"center", gap:5, padding:"3px 10px", borderRadius:20, background:c.bg, color:c.co, fontSize:11, fontWeight:700 }}>
+      <span style={{ width:5, height:5, borderRadius:"50%", background:c.d, display:"inline-block" }} />
+      {status.toUpperCase()}
+    </span>
+  );
+}
+function CatPill({ cat }) {
+  const h = { Dealers:"#7C3AED", T1:"#16A34A", T2:"#0891B2", T3:"#2563EB", T4:"#B45309", T5:"#DC2626", T6:"#9333EA" }[cat] || "#475569";
+  return <span style={{ padding:"2px 9px", borderRadius:20, background:h+"18", color:h, fontSize:11, fontWeight:700, border:"1px solid "+h+"33" }}>{cat}</span>;
+}
+
+// ── Location Request Form ───────────────────────────────────────────────────
+function RequestForm() {
+  const [locSel, setLocSel]               = useState([]);
+  const [reqType, setReqType]             = useState("");
+  const [effectiveDate, setEffectiveDate] = useState("");
+  const [message, setMessage]             = useState("");
+  const [name, setName]                   = useState("");
+  const [email, setEmail]                 = useState("");
+  const [status, setStatus]               = useState("idle");
+  const [errMsg, setErrMsg]               = useState("");
+
+  const toggleLoc = id => {
+    setLocSel(s => s.indexOf(id) !== -1 ? s.filter(x => x !== id) : [...s, id]);
+  };
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!reqType || !message || !name || !email) {
+      setErrMsg("Please fill out all required fields."); setStatus("error"); return;
+    }
+    if (locSel.length === 0) {
+      setErrMsg("Please select at least one location."); setStatus("error"); return;
+    }
+    setStatus("sending"); setErrMsg("");
+    const selectedLocs = LOCATIONS.filter(l => locSel.indexOf(l.id) !== -1);
+    const locNames = selectedLocs.map(l => l.name).join(", ");
+    const locLabel = locSel.length > 1 ? (locSel.length + " locations") : (selectedLocs[0] ? selectedLocs[0].name : "");
+    const subject = "[Standley Request] " + reqType + " — " + locLabel + (effectiveDate ? " (effective " + effectiveDate + ")" : "");
+    try {
+      const res = await fetch("/", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: encodeForm({
+          "form-name": "standley-location-request",
+          "name": name,
+          "email": email,
+          "request_type": reqType,
+          "locations": locNames,
+          "effective_date": effectiveDate || "Not specified",
+          "subject": subject,
+          "message": message,
+          "bot-field": "",
+        }),
+      });
+      if (!res.ok) throw new Error("Submission failed");
+      setStatus("success");
+      setLocSel([]); setReqType(""); setEffectiveDate(""); setMessage(""); setName(""); setEmail("");
+    } catch (err) {
+      setStatus("error");
+      setErrMsg("Something went wrong. Please email standley@ideagrove.com directly.");
+    }
+  };
+
+  if (status === "success") {
+    return (
+      <div style={{ background:"#F0FDF4", border:"1px solid #BBF7D0", borderRadius:12, padding:40, textAlign:"center" }}>
+        <div style={{ fontSize:42, marginBottom:12 }}>✓</div>
+        <div style={{ fontWeight:800, fontSize:18, color:"#16A34A", marginBottom:6 }}>Request submitted</div>
+        <div style={{ fontSize:13, color:"#475569", marginBottom:18 }}>
+          The Idea Grove team has been notified at standley@ideagrove.com. We'll follow up shortly.
+        </div>
+        <button onClick={()=>setStatus("idle")} style={{ padding:"9px 18px", borderRadius:7, background:IG.navy, color:"#fff", border:"none", fontSize:12, fontWeight:700, cursor:"pointer" }}>
+          Submit another request
+        </button>
+      </div>
+    );
+  }
+
+  const inputStyle = { width:"100%", background:"#fff", border:"1px solid "+IG.border, borderRadius:8, padding:"10px 12px", fontSize:13, color:IG.navy, outline:"none" };
+  const labelStyle = { display:"block", fontSize:11, fontWeight:700, color:IG.navy, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6 };
+  const nonAllCats = CATEGORIES.filter(c => c !== "All");
+
+  return (
+    <form onSubmit={submit} style={{ background:"#fff", border:"1px solid "+IG.border, borderRadius:12, padding:24 }}>
+      <div style={{ background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:8, padding:"10px 14px", marginBottom:18, fontSize:12, color:"#854D0E" }}>
+        <strong>Time-sensitive change?</strong> For store openings, closures, or anything that needs to be live by a specific date, please also email <strong>standley@ideagrove.com</strong> directly so we can action it immediately. BrightLocal does not support scheduled changes — all updates are pushed live as soon as we approve them.
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:14 }}>
+        <div>
+          <label style={labelStyle}>Your Name <span style={{ color:"#DC2626" }}>*</span></label>
+          <input type="text" value={name} onChange={e=>setName(e.target.value)} required style={inputStyle} placeholder="Jane Doe" />
+        </div>
+        <div>
+          <label style={labelStyle}>Email <span style={{ color:"#DC2626" }}>*</span></label>
+          <input type="email" value={email} onChange={e=>setEmail(e.target.value)} required style={inputStyle} placeholder="you@standley.com" />
+        </div>
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:14 }}>
+        <div>
+          <label style={labelStyle}>Request Type <span style={{ color:"#DC2626" }}>*</span></label>
+          <select value={reqType} onChange={e=>setReqType(e.target.value)} required style={inputStyle}>
+            <option value="">Select a request type…</option>
+            {REQUEST_TYPES.map(rt => <option key={rt} value={rt}>{rt}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={labelStyle}>Requested Effective Date</label>
+          <input type="date" value={effectiveDate} onChange={e=>setEffectiveDate(e.target.value)} style={inputStyle} />
+          <div style={{ fontSize:10, color:IG.muted, marginTop:4 }}>When should this change take effect? (Optional)</div>
+        </div>
+      </div>
+
+      <div style={{ marginBottom:14 }}>
+        <label style={labelStyle}>Locations <span style={{ color:"#DC2626" }}>*</span></label>
+        <div style={{ fontSize:11, color:IG.muted, marginBottom:8 }}>Select all locations this request applies to.</div>
+        <div style={{ background:"#F8FAFC", border:"1px solid "+IG.border, borderRadius:8, padding:12, maxHeight:240, overflowY:"auto" }}>
+          {nonAllCats.map(cat => {
+            const catLocs = LOCATIONS.filter(l => l.category === cat);
+            if (!catLocs.length) return null;
+            return (
+              <div key={cat} style={{ marginBottom:10 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
+                  <CatPill cat={cat} />
+                  <button type="button" onClick={()=>{
+                    const ids = catLocs.map(l => l.id);
+                    const allIn = ids.every(id => locSel.indexOf(id) !== -1);
+                    if (allIn) setLocSel(s => s.filter(x => ids.indexOf(x) === -1));
+                    else setLocSel(s => {
+                      const next = s.slice();
+                      ids.forEach(id => { if (next.indexOf(id) === -1) next.push(id); });
+                      return next;
+                    });
+                  }} style={{ fontSize:10, fontWeight:700, color:IG.blue, background:"none", border:"none", cursor:"pointer", textTransform:"uppercase" }}>
+                    Toggle all
+                  </button>
+                </div>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(200px, 1fr))", gap:4 }}>
+                  {catLocs.map(loc => {
+                    const isSelected = locSel.indexOf(loc.id) !== -1;
+                    return (
+                      <label key={loc.id} style={{ display:"flex", alignItems:"center", gap:6, padding:"4px 6px", borderRadius:5, cursor:"pointer", fontSize:12, color:IG.navy, background:isSelected ? "#EFF6FF" : "transparent" }}>
+                        <input type="checkbox" checked={isSelected} onChange={()=>toggleLoc(loc.id)} style={{ cursor:"pointer" }} />
+                        {loc.name}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {locSel.length > 0 && (
+          <div style={{ fontSize:11, color:IG.green, marginTop:6, fontWeight:700 }}>
+            {locSel.length} location{locSel.length !== 1 ? "s" : ""} selected
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginBottom:18 }}>
+        <label style={labelStyle}>Details <span style={{ color:"#DC2626" }}>*</span></label>
+        <textarea value={message} onChange={e=>setMessage(e.target.value)} required rows={6} style={{ ...inputStyle, fontFamily:"inherit" }} placeholder="Describe the change or request (new hours, address details, dates, etc.)…" />
+      </div>
+
+      {status === "error" && (
+        <div style={{ background:"#FEF2F2", border:"1px solid #FECACA", borderRadius:8, padding:"10px 12px", marginBottom:14, fontSize:12, color:"#DC2626", fontWeight:600 }}>
+          {errMsg}
+        </div>
+      )}
+
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+        <div style={{ fontSize:11, color:IG.muted }}>
+          Sent to <strong style={{ color:IG.navy }}>standley@ideagrove.com</strong>
+        </div>
+        <button type="submit" disabled={status === "sending"} style={{ padding:"10px 22px", borderRadius:8, background:status === "sending" ? "#94A3B8" : IG.navy, color:"#fff", border:"none", fontSize:13, fontWeight:700, cursor:status === "sending" ? "wait" : "pointer", textTransform:"uppercase", letterSpacing:"0.05em" }}>
+          {status === "sending" ? "Sending…" : "Submit Request"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function App() {
+  const [tab, setTab]                         = useState("overview");
+  const [locData, setLocData]                 = useState({});
+  const [reviews, setReviews]                 = useState([]);
+  const [responded, setResponded]             = useState({});
+  const [dismissed, setDismissed]             = useState({});
+  const [changeActions, setChangeActions]     = useState({}); // {alertId: 'accept'|'reject'}
+  const [changeNotes, setChangeNotes]         = useState({}); // {alertId: 'note text'}
+  const [actionsNotified, setActionsNotified] = useState({}); // {alertId: timestamp}
+  const [changeResolved, setChangeResolved]   = useState({}); // {alertId: timestamp} — IG team marked done in BrightLocal
+  const [lastDigestSent, setLastDigestSent]   = useState(null);
+  const [digestStatus, setDigestStatus]       = useState("idle"); // idle | sending | success | error
+  const [submitterName, setSubmitterName]     = useState("");
+  const [activeNoteId, setActiveNoteId]       = useState(null);
+  const [lastStateSync, setLastStateSync]     = useState(null);
+  const [syncStatus, setSyncStatus]           = useState("idle"); // idle | pulling | pushing | error
+  const [pendingDeletes, setPendingDeletes]   = useState([]); // ["bucket:key", ...] explicit deletes to send to server
+  const serverLoaded                          = useRef(false);
+  const pushTimer                             = useRef(null);
+  const pendingDeletesRef                     = useRef([]);
+  const [lastSync, setLastSync]               = useState(null);
+  const [loading, setLoading]                 = useState(false);
+  const [search, setSearch]                   = useState("");
+  const [catF, setCatF]                       = useState("All");
+  const [gbpF, setGbpF]                       = useState("All");
+  const [sc, setSc]                           = useState("name");
+  const [sd, setSd]                           = useState("asc");
+  const [inboxF, setInboxF]                   = useState("new");
+  const [inboxS, setInboxS]                   = useState("");
+  const [inboxC, setInboxC]                   = useState("All");
+  const [changeF, setChangeF]                 = useState("pending");
+  const [changePF, setChangePF]               = useState("All");
+  const [changeC, setChangeC]                 = useState("All");
+  const [changeS, setChangeS]                 = useState("");
+  const didLoad                               = useRef(false);
+
+  useEffect(() => {
+    if (didLoad.current) return;
+    didLoad.current = true;
+    try {
+      const r = localStorage.getItem("standley-responded");
+      if (r) setResponded(JSON.parse(r));
+      const d = localStorage.getItem("standley-dismissed");
+      if (d) setDismissed(JSON.parse(d));
+      const ca = localStorage.getItem("standley-change-actions");
+      if (ca) setChangeActions(JSON.parse(ca));
+      const cn = localStorage.getItem("standley-change-notes");
+      if (cn) setChangeNotes(JSON.parse(cn));
+      const an = localStorage.getItem("standley-actions-notified");
+      if (an) setActionsNotified(JSON.parse(an));
+      const cres = localStorage.getItem("standley-change-resolved");
+      if (cres) setChangeResolved(JSON.parse(cres));
+      const ld = localStorage.getItem("standley-last-digest");
+      if (ld) setLastDigestSent(parseInt(ld, 10) || null);
+      const sn = localStorage.getItem("standley-submitter-name");
+      if (sn) setSubmitterName(sn);
+    } catch(e) {}
+    // Stale-while-revalidate: show cached data immediately if it exists, then
+    // refresh in the background only when actually stale.
+    let usedCache = false;
+    try {
+      const cached = localStorage.getItem(CACHE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        const ts = parsed && parsed.ts;
+        const ld = parsed && parsed.locData && typeof parsed.locData === "object" ? parsed.locData : null;
+        const rv = parsed && Array.isArray(parsed.reviews) ? parsed.reviews : null;
+        if (ts && ld && rv) {
+          setLocData(ld); setReviews(rv); setLastSync(new Date(ts));
+          usedCache = true;
+          if (cacheIsStale(ts)) {
+            // Cache is past Monday 2pm CST refresh — kick off a background refresh
+            fetchAll();
+          }
+        }
+      }
+    } catch(e) {}
+    if (!usedCache) fetchAll();
+  }, []);
+
+  // Process a single location and write into shared d / rv buckets
+  async function fetchOneLocation(l, d, rv) {
+    if (!l.locationId) {
+      d[l.id] = { rating:0, reviews:0, avgRank:0, syncAlerts:0, gbpStatus:"Active", alerts:[] };
+      return;
+    }
+    try {
+      const reportId = REPORT_MAP[l.locationId];
+      const lrtId    = LRT_REPORT_MAP[l.locationId];
+      const [repRes, revRes, lrtRes, alertsRes] = await Promise.all([
+        reportId ? bl("/manage/v1/rm/reports/" + reportId) : Promise.resolve(null),
+        reportId ? bl("/manage/v1/rm/reports/" + reportId + "/reviews?sort_date=desc&num_per_page=100") : Promise.resolve(null),
+        lrtId    ? bl("/manage/v1/lrt/reports/" + lrtId + "/result") : Promise.resolve(null),
+        bl("/manage/v1/locations/" + l.locationId + "/active-sync/alerts"),
+      ]);
+      const rating      = parseFloat(repRes?.rating || 0);
+      const reviewCount = parseInt(repRes?.reviews_count || 0);
+      let avgRank = 0;
+      if (lrtRes?.rankings?.by_keyword?.length) {
+        const ranks = lrtRes.rankings.by_keyword
+          .map(k => k.results?.google?.[0]?.rank || 0)
+          .filter(r => r > 0);
+        avgRank = ranks.length ? Math.round(ranks.reduce((a,b)=>a+b,0)/ranks.length) : 0;
+      }
+      const alerts     = Array.isArray(alertsRes) ? alertsRes : [];
+      const syncAlerts = alerts.length;
+      const gbpStatus  = alerts.some(a => a.source === "gmb") ? "Issues" : "Active";
+      d[l.id] = { rating, reviews:reviewCount, avgRank, syncAlerts, gbpStatus, alerts, locationId:l.locationId, reportId, lrtId };
+      const reviewItems = Array.isArray(revRes?.items) ? revRes.items
+                        : Array.isArray(revRes?.reviews) ? revRes.reviews
+                        : Array.isArray(revRes?.data) ? revRes.data
+                        : Array.isArray(revRes) ? revRes
+                        : [];
+      // BrightLocal's /reviews endpoint doesn't expose response status (no field for it
+       // in the schema). Source of truth for "responded" is local — user marks each via
+       // the dashboard or uses the "Mark all visible as responded" bulk button.
+      reviewItems.forEach((r, i) => {
+        const pubRaw = r.publish_time || r.fetch_time || null;
+        const pubDate = pubRaw ? new Date(pubRaw) : null;
+        const da = pubDate && !isNaN(pubDate.getTime()) ? Math.floor((Date.now() - pubDate.getTime()) / 86400000) : 999;
+        const stableId = r.review_id || r.id || (l.id + "-" + reportId + "-" + i);
+        rv.push({
+          id: l.id + "-rev-" + stableId,
+          reviewId: r.review_id || null,
+          locId: l.id,
+          reviewer: r.author || "Anonymous",
+          stars: parseFloat(r.rating || 0),
+          body: r.text || r.title || "",
+          date: pubDate && !isNaN(pubDate.getTime()) ? pubDate.toLocaleDateString() : "",
+          publishTime: pubRaw,
+          source: r.directory || "google",
+          link: r.link || r.url || null,
+          isNew: da <= 7,
+        });
+      });
+    } catch (e) {
+      console.error("Fetch failed for", l.name, e && e.message);
+      // Still write a defaults entry so the row renders
+      if (!d[l.id]) d[l.id] = { rating:0, reviews:0, avgRank:0, syncAlerts:0, gbpStatus:"Active", alerts:[], locationId:l.locationId };
+    }
+  }
+
+  async function fetchAll() {
+    setLoading(true);
+    const d = {}, rv = [];
+    const BATCH_SIZE = 10; // Run 10 locations in parallel — ~4-5s total instead of ~30s
+    for (let i = 0; i < LOCATIONS.length; i += BATCH_SIZE) {
+      const batch = LOCATIONS.slice(i, i + BATCH_SIZE);
+      await Promise.all(batch.map(l => fetchOneLocation(l, d, rv)));
+    }
+    const now = Date.now();
+    setLocData(d); setReviews(rv); setLastSync(new Date(now));
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts:now, locData:d, reviews:rv })); } catch(e) {}
+    setLoading(false);
+  }
+
+  const markR  = id => { const u={...responded,[id]:true}; setResponded(u); try{localStorage.setItem("standley-responded",JSON.stringify(u));}catch(e){} };
+  const markD  = id => { const u={...dismissed,[id]:true}; setDismissed(u); try{localStorage.setItem("standley-dismissed",JSON.stringify(u));}catch(e){} };
+  const setAction = (id, val) => { const u={...changeActions,[id]:val}; setChangeActions(u); try{localStorage.setItem("standley-change-actions",JSON.stringify(u));}catch(e){} };
+  const clearAction = id => {
+    // Local clear
+    const u = {...changeActions}; delete u[id]; setChangeActions(u);
+    try { localStorage.setItem("standley-change-actions", JSON.stringify(u)); } catch(e) {}
+    // Also clear the "sent" notification flag so re-accepting later notifies properly
+    const un = {...actionsNotified}; delete un[id]; setActionsNotified(un);
+    try { localStorage.setItem("standley-actions-notified", JSON.stringify(un)); } catch(e) {}
+    // Also clear any resolved status (Undo is a full reset)
+    const ur = {...changeResolved}; delete ur[id]; setChangeResolved(ur);
+    try { localStorage.setItem("standley-change-resolved", JSON.stringify(ur)); } catch(e) {}
+    // Queue explicit deletes for the server (server's additive merge can't infer "removed")
+    setPendingDeletes(d => Array.from(new Set([...d, "changeActions:" + id, "actionsNotified:" + id, "changeResolved:" + id])));
+  };
+  const markResolved = id => {
+    const u = {...changeResolved, [id]: Date.now()};
+    setChangeResolved(u);
+    try { localStorage.setItem("standley-change-resolved", JSON.stringify(u)); } catch(e) {}
+  };
+  const unmarkResolved = id => {
+    const u = {...changeResolved}; delete u[id]; setChangeResolved(u);
+    try { localStorage.setItem("standley-change-resolved", JSON.stringify(u)); } catch(e) {}
+    setPendingDeletes(d => Array.from(new Set([...d, "changeResolved:" + id])));
+  };
+  const setNote = (id, val) => { const u={...changeNotes,[id]:val}; setChangeNotes(u); try{localStorage.setItem("standley-change-notes",JSON.stringify(u));}catch(e){} };
+  const ts = col => { if(sc===col) setSd(d=>d==="asc"?"desc":"asc"); else{setSc(col);setSd("asc");}};
+
+  // ── Shared state sync (Netlify Blobs) ───────────────────────────────────
+  // All flagging / note / responded / dismissed state lives in a server blob so
+  // every user opening the dashboard sees the same live view. localStorage is
+  // kept as an offline fallback only.
+  async function pullSharedState(silent) {
+    if (!silent) setSyncStatus("pulling");
+    try {
+      const res = await fetch("/.netlify/functions/state-function", { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      const safe = data && typeof data === "object" ? data : {};
+
+      // ── One-time localStorage → server migration ───────────────────────
+      // If the server has fewer keys than our local cache, push the local
+      // data up so any work the user did before this version deploys is
+      // preserved. We do this BEFORE applying server state so we don't lose
+      // local-only keys.
+      const localFromLS = (key) => {
+        try { return JSON.parse(localStorage.getItem(key) || "{}") || {}; }
+        catch(e) { return {}; }
+      };
+      const localCache = {
+        changeActions:   localFromLS("standley-change-actions"),
+        changeNotes:     localFromLS("standley-change-notes"),
+        actionsNotified: localFromLS("standley-actions-notified"),
+        changeResolved:  localFromLS("standley-change-resolved"),
+        responded:       localFromLS("standley-responded"),
+        dismissed:       localFromLS("standley-dismissed"),
+      };
+      const hasNewKeys = (local, server) => {
+        const sk = new Set(Object.keys(server || {}));
+        return Object.keys(local || {}).some(k => !sk.has(k));
+      };
+      const needsMigration = (
+        hasNewKeys(localCache.changeActions,   safe.changeActions) ||
+        hasNewKeys(localCache.changeNotes,     safe.changeNotes) ||
+        hasNewKeys(localCache.actionsNotified, safe.actionsNotified) ||
+        hasNewKeys(localCache.changeResolved,  safe.changeResolved) ||
+        hasNewKeys(localCache.responded,       safe.responded) ||
+        hasNewKeys(localCache.dismissed,       safe.dismissed)
+      );
+
+      // ── Apply merged state (server wins for overlapping keys, local fills gaps)
+      const merge = (a, b) => Object.assign({}, a || {}, b || {});
+      const merged = {
+        changeActions:   merge(localCache.changeActions,   safe.changeActions),
+        changeNotes:     merge(localCache.changeNotes,     safe.changeNotes),
+        actionsNotified: merge(localCache.actionsNotified, safe.actionsNotified),
+        changeResolved:  merge(localCache.changeResolved,  safe.changeResolved),
+        responded:       merge(localCache.responded,       safe.responded),
+        dismissed:       merge(localCache.dismissed,       safe.dismissed),
+        lastDigestSent:  safe.lastDigestSent || (parseInt(localStorage.getItem("standley-last-digest"), 10) || null),
+      };
+      // ── Apply SERVER tombstones ────────────────────────────────────────
+      // Strip any keys the server has tombstoned (deleted by another tab/user)
+      // from our merged state AND localStorage, so we don't re-upload them.
+      const lsMap = {
+        changeActions: "standley-change-actions",
+        changeNotes: "standley-change-notes",
+        actionsNotified: "standley-actions-notified",
+        changeResolved: "standley-change-resolved",
+        responded: "standley-responded",
+        dismissed: "standley-dismissed",
+      };
+      const stripPath = (path) => {
+        const idx = path.indexOf(":");
+        if (idx < 0) return;
+        const bucket = path.slice(0, idx);
+        const key = path.slice(idx + 1);
+        if (merged[bucket] && merged[bucket][key] !== undefined) delete merged[bucket][key];
+        if (lsMap[bucket]) {
+          try {
+            const lsData = JSON.parse(localStorage.getItem(lsMap[bucket]) || "{}");
+            if (lsData[key] !== undefined) {
+              delete lsData[key];
+              localStorage.setItem(lsMap[bucket], JSON.stringify(lsData));
+            }
+          } catch(e) {}
+        }
+        // Also drop from localCache so the migration check below sees the right shape
+        if (localCache[bucket] && localCache[bucket][key] !== undefined) delete localCache[bucket][key];
+      };
+      if (safe.tombstones && typeof safe.tombstones === "object") {
+        Object.keys(safe.tombstones).forEach(stripPath);
+      }
+      // Apply locally-pending deletes too (this browser's own undos still in flight)
+      pendingDeletesRef.current.forEach(stripPath);
+
+      setChangeActions(merged.changeActions);
+      setChangeResolved(merged.changeResolved);
+      setChangeNotes(merged.changeNotes);
+      setActionsNotified(merged.actionsNotified);
+      setResponded(merged.responded);
+      setDismissed(merged.dismissed);
+      if (merged.lastDigestSent) setLastDigestSent(merged.lastDigestSent);
+
+      serverLoaded.current = true;
+      setLastStateSync(Date.now());
+      setSyncStatus("idle");
+
+      // If we had local-only keys, push immediately to migrate them to the server
+      if (needsMigration) {
+        console.log("[Standley] Migrating local data to shared state…");
+        try {
+          await fetch("/.netlify/functions/state-function", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(Object.assign({}, merged, { updatedBy: (localStorage.getItem("standley-submitter-name") || "(migration)") }))
+          });
+        } catch(e) { console.error("Migration push failed:", e); }
+      }
+    } catch(e) {
+      console.error("Pull shared state failed:", e);
+      serverLoaded.current = true; // unblock pushes even if pull fails (offline)
+      setSyncStatus("error");
+    }
+  }
+  async function pushSharedState() {
+    if (!serverLoaded.current) return; // never push before we've pulled at least once
+    setSyncStatus("pushing");
+    const deletesSnapshot = pendingDeletesRef.current.slice();
+    try {
+      const res = await fetch("/.netlify/functions/state-function", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          changeActions, changeNotes, actionsNotified, changeResolved, responded, dismissed,
+          lastDigestSent,
+          deletes: deletesSnapshot,
+          updatedBy: submitterName || "(unknown)"
+        })
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      setLastStateSync(Date.now());
+      setSyncStatus("idle");
+      // Successfully pushed — drop the deletes we just sent (keep any added since)
+      if (deletesSnapshot.length) {
+        setPendingDeletes(d => d.filter(x => deletesSnapshot.indexOf(x) === -1));
+      }
+    } catch(e) {
+      console.error("Push shared state failed:", e);
+      setSyncStatus("error");
+    }
+  }
+  // Initial pull on mount
+  useEffect(() => {
+    pullSharedState();
+  }, []);
+  // Keep pendingDeletesRef in sync with state so async code can read latest value
+  useEffect(() => { pendingDeletesRef.current = pendingDeletes; }, [pendingDeletes]);
+  // Debounced push whenever any shared field changes (skipped before initial pull completes)
+  useEffect(() => {
+    if (!serverLoaded.current) return;
+    if (pushTimer.current) clearTimeout(pushTimer.current);
+    pushTimer.current = setTimeout(() => pushSharedState(), 800);
+    return () => { if (pushTimer.current) clearTimeout(pushTimer.current); };
+  }, [changeActions, changeNotes, actionsNotified, changeResolved, responded, dismissed, lastDigestSent, pendingDeletes]);
+  // Re-pull every 15 seconds + when the user returns to the tab
+  useEffect(() => {
+    const interval = setInterval(() => pullSharedState(true), 15000);
+    const onVis = () => { if (!document.hidden) pullSharedState(true); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearInterval(interval); document.removeEventListener("visibilitychange", onVis); };
+  }, []);
+
+  // Send digest of all flagged-but-not-yet-notified change actions to the Idea Grove team
+  async function sendDigest(unsentAlerts) {
+    if (!unsentAlerts || unsentAlerts.length === 0) return;
+    setDigestStatus("sending");
+    const accepts = unsentAlerts.filter(a => changeActions[a.id] === "accept");
+    const rejects = unsentAlerts.filter(a => changeActions[a.id] === "reject");
+    let body = "Submitted by: " + (submitterName || "Standley team") + "\n";
+    body += "Submitted at: " + new Date().toLocaleString() + "\n\n";
+    body += "Summary:\n";
+    body += "  • " + accepts.length + " to ACCEPT (confirm change in BrightLocal)\n";
+    body += "  • " + rejects.length + " to REJECT (revert change in BrightLocal)\n\n";
+    body += "──────────────────────────────────────\n\n";
+    unsentAlerts.forEach((a, i) => {
+      const loc = LOCATIONS.find(l => l.id === a.locId);
+      const action = changeActions[a.id];
+      const note = (changeNotes[a.id] || "").trim() || "(no note)";
+      const sm = SOURCE_META[a.source] || { label: a.source || "Unknown" };
+      body += (i + 1) + ". " + action.toUpperCase() + " — " + (loc ? loc.name : "Unknown") + " (" + (loc ? loc.category : "") + ")\n";
+      body += "   Platform: " + sm.label + "\n";
+      body += "   Field: " + friendlyField(a.field) + "\n";
+      body += "   Was: " + formatVal(a.old_value).replace(/\n/g, "\n        ") + "\n";
+      body += "   Now: " + formatVal(a.value).replace(/\n/g, "\n        ") + "\n";
+      if (a.time) body += "   Detected: " + a.time + "\n";
+      body += "   Note: " + note + "\n";
+      if (loc && loc.dashboard) body += "   Dashboard: " + loc.dashboard + "\n";
+      body += "\n";
+    });
+    const subject = "[Standley Change Digest] " + unsentAlerts.length + " flagged — " + accepts.length + " accept, " + rejects.length + " reject";
+    try {
+      const res = await fetch("/", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: encodeForm({
+          "form-name": "standley-change-digest",
+          "subject": subject,
+          "total_count": unsentAlerts.length,
+          "accept_count": accepts.length,
+          "reject_count": rejects.length,
+          "submitted_by": submitterName || "(not provided)",
+          "message": body,
+          "bot-field": "",
+        }),
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const now = Date.now();
+      const u = Object.assign({}, actionsNotified);
+      unsentAlerts.forEach(a => { u[a.id] = now; });
+      setActionsNotified(u);
+      setLastDigestSent(now);
+      try {
+        localStorage.setItem("standley-actions-notified", JSON.stringify(u));
+        localStorage.setItem("standley-last-digest", String(now));
+      } catch(e) {}
+      setDigestStatus("success");
+      setTimeout(() => setDigestStatus("idle"), 3500);
+    } catch (e) {
+      console.error("Digest send failed:", e);
+      setDigestStatus("error");
+      setTimeout(() => setDigestStatus("idle"), 5000);
+    }
+  }
+  function persistSubmitterName(name) {
+    setSubmitterName(name);
+    try { localStorage.setItem("standley-submitter-name", name); } catch(e) {}
+  }
+  function timeAgo(ts) {
+    if (!ts) return "";
+    const mins = Math.floor((Date.now() - ts) / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return mins + "m ago";
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return hrs + "h ago";
+    const days = Math.floor(hrs / 24);
+    return days + "d ago";
+  }
+
+  // ── Aggregates ─────────────────────────────────────────────────────────────
+  const allD           = LOCATIONS.map(l => locData[l.id] || {rating:0,reviews:0,avgRank:0,syncAlerts:0,gbpStatus:"Active",alerts:[]});
+  const avgRating      = (allD.reduce((s,d)=>s+(d.rating||0),0)/allD.length).toFixed(1);
+  const totalReviews   = allD.reduce((s,d)=>s+(d.reviews||0),0);
+  const totalAlerts    = allD.reduce((s,d)=>s+(d.syncAlerts||0),0);
+  const gbpIssues      = allD.filter(d=>d.gbpStatus==="Issues").length;
+  // "Needs response" = within the age window AND not locally marked responded/dismissed.
+  // BrightLocal's /reviews endpoint doesn't return response status, so the dashboard
+  // treats every recent review as Unread until the user clicks Mark Responded
+  // (or uses the bulk action button to clear backlog).
+  const NEEDS_RESP_DAYS = 45;
+  function reviewNeedsResp(r) {
+    if (!r) return false;
+    if (responded[r.id] || dismissed[r.id]) return false;
+    if (!r.publishTime) return false;
+    const t = new Date(r.publishTime).getTime();
+    if (isNaN(t)) return false;
+    const days = (Date.now() - t) / 86400000;
+    return days <= NEEDS_RESP_DAYS;
+  }
+  const unresponded    = reviews.filter(reviewNeedsResp).length;
+  const rankedLocs     = allD.filter(d=>d.avgRank>0);
+  const overallAvgRank = rankedLocs.length ? Math.round(rankedLocs.reduce((s,d)=>s+d.avgRank,0)/rankedLocs.length) : 0;
+
+  // Flat alerts list with stable IDs and priority
+  const allAlerts = LOCATIONS.flatMap(loc => {
+    const d = locData[loc.id];
+    if (!d?.alerts?.length) return [];
+    return d.alerts.map((a, i) => ({
+      ...a,
+      id: loc.id + "-alert-" + i,
+      locId: loc.id,
+      priority: fieldPriority(a.field),
+    }));
+  });
+  const pendingActions     = allAlerts.filter(a => !changeActions[a.id]).length;
+  const acceptedCount      = allAlerts.filter(a => changeActions[a.id]==="accept").length;
+  const rejectedCount      = allAlerts.filter(a => changeActions[a.id]==="reject").length;
+  const queueCount         = acceptedCount + rejectedCount;
+  const resolvedCount      = allAlerts.filter(a => !!changeResolved[a.id]).length;
+  const awaitingIGWork     = allAlerts.filter(a => changeActions[a.id] && !changeResolved[a.id]).length; // flagged but not yet resolved in BrightLocal
+  const unreviewedCritical = allAlerts.filter(a => a.priority==="critical" && !changeActions[a.id]).length;
+  const unreviewedWatch    = allAlerts.filter(a => a.priority==="watch"    && !changeActions[a.id]).length;
+
+  // ── Filtered locations table ───────────────────────────────────────────────
+  const filtLocs = LOCATIONS.filter(l => {
+    const d = locData[l.id]||{};
+    return l.name.toLowerCase().includes(search.toLowerCase())
+      && (catF==="All"||l.category===catF)
+      && (gbpF==="All"||d.gbpStatus===gbpF);
+  }).sort((a,b) => {
+    const da=locData[a.id]||{}, db=locData[b.id]||{};
+    const map={name:[a.name,b.name],category:[a.category,b.category],rating:[da.rating||0,db.rating||0],reviews:[da.reviews||0,db.reviews||0],avgRank:[da.avgRank||999,db.avgRank||999],syncAlerts:[da.syncAlerts||0,db.syncAlerts||0]};
+    const [av,bv]=map[sc]||[a.name,b.name];
+    return typeof av==="string"?(sd==="asc"?av.localeCompare(bv):bv.localeCompare(av)):(sd==="asc"?av-bv:bv-av);
+  });
+
+  // ── Filtered inbox reviews ─────────────────────────────────────────────────
+  const inboxReviews = reviews.filter(r => {
+    if (!r) return false;
+    const loc = LOCATIONS.find(l => l.id === r.locId);
+    const ms = (inboxS || "").toLowerCase();
+    const reviewer = (r.reviewer || "").toLowerCase();
+    const body = (r.body || "").toLowerCase();
+    const locNameMatch = loc && loc.name ? loc.name.toLowerCase().indexOf(ms) !== -1 : false;
+    const ok = reviewer.indexOf(ms) !== -1 || body.indexOf(ms) !== -1 || locNameMatch;
+    const mc = inboxC === "All" || (loc && loc.category === inboxC);
+    if (!ok || !mc) return false;
+    if (inboxF === "new") return reviewNeedsResp(r);
+    if (inboxF === "responded") return !!responded[r.id];
+    return !dismissed[r.id];
+  }).sort((a, b) => {
+    const ad = a && a.publishTime ? new Date(a.publishTime).getTime() : 0;
+    const bd = b && b.publishTime ? new Date(b.publishTime).getTime() : 0;
+    return bd - ad;
+  });
+
+  // ── Filtered change alerts ─────────────────────────────────────────────────
+  const filteredChanges = allAlerts.filter(a => {
+    const loc = LOCATIONS.find(l=>l.id===a.locId);
+    const action = changeActions[a.id];
+    const resolved = !!changeResolved[a.id];
+    if (changeF==="pending" && action) return false;
+    if (changeF==="queued" && (!action || resolved)) return false; // "Flagged" tab — hide resolved
+    if (changeF==="resolved" && !resolved) return false;
+    if (changePF!=="All" && a.priority!==changePF) return false;
+    if (changeC!=="All" && loc?.category!==changeC) return false;
+    if (changeS) {
+      const s = changeS.toLowerCase();
+      if (!loc?.name?.toLowerCase().includes(s) &&
+          !friendlyField(a.field).toLowerCase().includes(s) &&
+          !formatVal(a.value).toLowerCase().includes(s) &&
+          !formatVal(a.old_value).toLowerCase().includes(s)) return false;
+    }
+    return true;
+  }).sort((a,b) => {
+    const order={critical:0,watch:1,info:2};
+    return (order[a.priority]||2)-(order[b.priority]||2);
+  });
+
+  const SI = ({col}) => <span style={{fontSize:9,marginLeft:3,opacity:sc===col?1:0.3,color:sc===col?IG.teal:"inherit"}}>{sc===col?(sd==="asc"?"▲":"▼"):"⇅"}</span>;
+
+  const hBtn = (t, lbl) => (
+    <button onClick={()=>setTab(t)} style={{padding:"6px 16px",borderRadius:6,fontSize:12,fontWeight:700,border:"none",cursor:"pointer",textTransform:"uppercase",position:"relative",background:tab===t?"rgba(255,255,255,0.12)":"transparent",color:tab===t?IG.white:"rgba(255,255,255,0.45)"}}>
+      {lbl}
+      {t==="inbox"&&unresponded>0&&
+        <span style={{position:"absolute",top:2,right:2,background:"#EF4444",color:"#fff",borderRadius:10,padding:"0 5px",fontSize:10,fontWeight:800,lineHeight:"16px"}}>{unresponded}</span>}
+      {t==="changes"&&unreviewedCritical>0&&
+        <span style={{position:"absolute",top:2,right:2,background:"#DC2626",color:"#fff",borderRadius:10,padding:"0 5px",fontSize:10,fontWeight:800,lineHeight:"16px"}}>{unreviewedCritical}</span>}
+      {t==="changes"&&unreviewedCritical===0&&unreviewedWatch>0&&
+        <span style={{position:"absolute",top:2,right:2,background:"#D97706",color:"#fff",borderRadius:10,padding:"0 5px",fontSize:10,fontWeight:800,lineHeight:"16px"}}>{unreviewedWatch}</span>}
+    </button>
+  );
+
+  return (
+    <div style={{fontFamily:"'Montserrat','Inter',sans-serif",background:IG.offwhite,minHeight:"100vh",color:IG.navy}}>
+      {/* ── Header ── */}
+      <div style={{background:IG.navy,padding:"0 24px",display:"flex",alignItems:"center",justifyContent:"space-between",height:64,flexWrap:"wrap",gap:8}}>
+        <div style={{display:"flex",alignItems:"center",gap:14}}>
+          <svg width="34" height="34" viewBox="0 0 36 36" fill="none">
+            <polygon points="18,3 26,16 10,16" fill={IG.green}/>
+            <polygon points="18,10 28,27 8,27" fill={IG.teal} opacity="0.8"/>
+            <rect x="16" y="27" width="4" height="7" rx="1.5" fill={IG.green}/>
+          </svg>
+          <div style={{borderLeft:"1px solid rgba(255,255,255,0.12)",paddingLeft:14}}>
+            <div style={{fontWeight:800,fontSize:16,color:IG.white}}>Standley</div>
+            <div style={{fontSize:10,color:IG.teal,fontWeight:600,letterSpacing:"0.1em",textTransform:"uppercase",marginTop:1}}>Location Intelligence · IdeaGrove</div>
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          {lastSync&&<span style={{fontSize:11,color:"rgba(255,255,255,0.35)"}}>Data {lastSync.toLocaleDateString([],{month:"short",day:"numeric"})}</span>}
+          {/* Shared-state sync indicator */}
+          {syncStatus === "pulling" && <span style={{fontSize:11,color:IG.teal}}>● Live syncing…</span>}
+          {syncStatus === "pushing" && <span style={{fontSize:11,color:IG.teal}}>● Saving…</span>}
+          {syncStatus === "error" && <span title="Couldn't reach shared state server" style={{fontSize:11,color:"#FCA5A5"}}>● Offline</span>}
+          {syncStatus === "idle" && lastStateSync && <span title={"Last shared sync: " + new Date(lastStateSync).toLocaleTimeString()} style={{fontSize:11,color:"#86EFAC"}}>● Live</span>}
+          {loading
+            ? <span style={{fontSize:11,color:IG.teal}}>Syncing data…</span>
+            : <button onClick={()=>{ localStorage.removeItem(CACHE_KEY); fetchAll(); pullSharedState(); }} style={{fontSize:11,color:IG.teal,background:"transparent",border:"1px solid rgba(40,198,202,0.3)",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontWeight:600}}>⟳ Refresh</button>
+          }
+          <div style={{display:"flex",gap:2,background:"rgba(255,255,255,0.06)",borderRadius:8,padding:3}}>
+            {hBtn("overview","Overview")}
+            {hBtn("changes","Changes")}
+            {hBtn("inbox","Inbox")}
+            {hBtn("requests","Requests")}
+          </div>
+        </div>
+      </div>
+      <div style={{height:3,background:"linear-gradient(90deg,"+IG.green+","+IG.teal+","+IG.blue+")"}}/>
+      <div style={{padding:"24px",maxWidth:1400,margin:"0 auto"}}>
+
+        {/* ══════════ OVERVIEW TAB ══════════ */}
+        {tab==="overview"&&(
+          <>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:24}}>
+              {[
+                {label:"Avg Rating",      value:avgRating,                     accent:IG.gold},
+                {label:"Total Reviews",   value:totalReviews.toLocaleString(), accent:IG.teal},
+                {label:"Avg Rank",        value:overallAvgRank?"#"+overallAvgRank:"—", accent:overallAvgRank<=3?IG.green:overallAvgRank<=10?"#D97706":"#DC2626"},
+                {label:"Listing Changes", value:pendingActions,                accent:unreviewedCritical>0?"#DC2626":pendingActions>0?"#D97706":IG.green, warn:unreviewedCritical>0, onClick:()=>setTab("changes"), sub:pendingActions===0?"all "+allAlerts.length+" reviewed":unreviewedCritical>0?unreviewedCritical+" critical of "+pendingActions:pendingActions+" of "+allAlerts.length+" pending"},
+                {label:"Needs Response",  value:unresponded,                   accent:"#EF4444", warn:unresponded>0, onClick:()=>setTab("inbox"), sub:"new reviews"},
+              ].map(k=>(
+                <div key={k.label} onClick={k.onClick} style={{background:k.warn?"#FEF2F2":"#fff",border:"1px solid "+(k.warn?"#FECACA":IG.border),borderRadius:10,padding:"16px",cursor:k.onClick?"pointer":"default"}}>
+                  <div style={{fontSize:11,color:"#64748B",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8}}>{k.label}</div>
+                  <div style={{fontSize:26,fontWeight:800,color:k.warn?"#DC2626":k.accent,letterSpacing:"-0.02em"}}>{k.value}</div>
+                  {k.sub&&<div style={{fontSize:10,color:IG.muted,marginTop:4}}>{k.sub}</div>}
+                </div>
+              ))}
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:14}}>
+              <input placeholder="Search locations…" value={search} onChange={e=>setSearch(e.target.value)} style={{background:"#fff",border:"1px solid "+IG.border,borderRadius:8,padding:"8px 14px",fontSize:13,color:IG.navy,outline:"none",width:180}}/>
+              <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                {CATEGORIES.map(c=><button key={c} onClick={()=>setCatF(c)} style={{padding:"5px 12px",borderRadius:20,fontSize:11,fontWeight:700,cursor:"pointer",border:"1px solid "+(catF===c?IG.navy:IG.border),background:catF===c?IG.navy:"#fff",color:catF===c?"#fff":"#475569"}}>{c}</button>)}
+              </div>
+              <span style={{fontSize:11,color:IG.muted,marginLeft:"auto"}}>{filtLocs.length} of {LOCATIONS.length}</span>
+            </div>
+            <div style={{background:"#fff",border:"1px solid "+IG.border,borderRadius:12,overflow:"hidden"}}>
+              <div style={{overflowX:"auto"}}>
+                <table>
+                  <thead>
+                    <tr style={{background:"#F8FAFC"}}>
+                      {[["name","Location"],["category","Group"],["rating","Rating"],["reviews","Reviews"],["avgRank","Avg Rank"],["syncAlerts","Sync Alerts"],[null,"GBP"],[null,"Dashboard"]].map(([col,lbl])=>(
+                        <th key={lbl} onClick={col?()=>ts(col):undefined} style={{padding:"11px 16px",textAlign:"left",fontSize:10,fontWeight:700,color:"#64748B",letterSpacing:"0.1em",textTransform:"uppercase",cursor:col?"pointer":"default",userSelect:"none",whiteSpace:"nowrap",borderBottom:"1px solid "+IG.border}}>
+                          {lbl}{col&&<SI col={col}/>}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtLocs.map((loc,i)=>{
+                      const d=locData[loc.id]||{};
+                      const locNew = reviews.filter(r => r && r.locId === loc.id && reviewNeedsResp(r)).length;
+                      const tdS={padding:"13px 16px",fontSize:13,borderBottom:"1px solid #F1F5F9"};
+                      return (
+                        <tr key={loc.id} style={{background:i%2===0?"#fff":"#FAFAFA"}}>
+                          <td style={tdS}>
+                            <span style={{fontWeight:700,color:IG.navy}}>{loc.name}</span>
+                            {locNew>0&&<span style={{marginLeft:7,background:"#FEE2E2",color:"#DC2626",borderRadius:10,padding:"1px 7px",fontSize:10,fontWeight:800}}>{locNew} new</span>}
+                          </td>
+                          <td style={tdS}><CatPill cat={loc.category}/></td>
+                          <td style={tdS}><Stars val={d.rating||0}/></td>
+                          <td style={{...tdS,color:"#374151"}}>{d.reviews||0}</td>
+                          <td style={tdS}>
+                            <span style={{fontWeight:800,fontSize:15,color:!d.avgRank?"#CBD5E1":d.avgRank<=3?IG.green:d.avgRank<=10?"#D97706":"#DC2626"}}>
+                              {d.avgRank?"#"+d.avgRank:"—"}
+                            </span>
+                          </td>
+                          <td style={tdS}>
+                            {(() => {
+                              const locAlerts = allAlerts.filter(a => a.locId === loc.id);
+                              const locPending = locAlerts.filter(a => !changeActions[a.id]).length;
+                              if (locAlerts.length === 0) return <span style={{color:IG.muted,fontSize:12}}>None</span>;
+                              // Build platform icon list (G, A, B, F) — distinct platforms with pending issues
+                              const pendingAlerts = locAlerts.filter(a => !changeActions[a.id]);
+                              const platforms = Array.from(new Set(pendingAlerts.map(a => a.source))).map(src => {
+                                const sm = SOURCE_META[src] || {label:src||"?",color:"#475569"};
+                                return <span key={src} title={sm.label} style={{display:"inline-flex",alignItems:"center",justifyContent:"center",width:16,height:16,borderRadius:"50%",background:sm.color,color:"#fff",fontSize:9,fontWeight:800,marginLeft:3}}>{sm.label.charAt(0)}</span>;
+                              });
+                              if (locPending === 0) return <span style={{background:"#DCFCE7",color:"#16A34A",borderRadius:10,padding:"2px 8px",fontSize:11,fontWeight:700}}>✓ Reviewed ({locAlerts.length})</span>;
+                              return (
+                                <button
+                                  onClick={() => { setTab("changes"); setChangeS(loc.name); setChangeF("pending"); setChangePF("All"); setChangeC("All"); }}
+                                  title={"Click to review " + locPending + " pending change" + (locPending!==1?"s":"") + " for " + loc.name}
+                                  style={{background:"#FEF9C3",color:"#854D0E",borderRadius:10,padding:"3px 10px",fontSize:11,fontWeight:700,border:"none",cursor:"pointer",display:"inline-flex",alignItems:"center",gap:0}}>
+                                  {locPending} pending {platforms}
+                                </button>
+                              );
+                            })()}
+                          </td>
+                          <td style={tdS}><GBPBadge status={d.gbpStatus||"Active"}/></td>
+                          <td style={tdS}>
+                            {loc.dashboard
+                              ? <a href={loc.dashboard} target="_blank" rel="noopener noreferrer" style={{padding:"5px 12px",borderRadius:6,background:IG.navy,color:"#fff",fontSize:12,fontWeight:700}}>View ↗</a>
+                              : <span style={{color:IG.muted}}>—</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* ══════════ CHANGE INBOX TAB ══════════ */}
+        {tab==="changes"&&(
+          <>
+            <div style={{marginBottom:20}}>
+              <h2 style={{fontWeight:800,fontSize:22,margin:"0 0 4px"}}>Change Inbox</h2>
+              <p style={{fontSize:13,color:"#64748B",margin:0}}>
+                Review listing changes detected by BrightLocal. Accept to confirm the change, or Reject to flag it for our team to revert.
+              </p>
+            </div>
+
+            {/* Source of truth note */}
+            <div style={{background:"#EFF6FF",border:"1px solid #BFDBFE",borderRadius:8,padding:"10px 14px",marginBottom:14,fontSize:12,color:"#1E3A8A"}}>
+              <strong>Workflow:</strong> <strong>Needs Action</strong> (Standley reviews → Accept or Reject) → <strong>Flagged</strong> (Idea Grove sees the digest and actions it in BrightLocal) → <strong>Resolved</strong> (Idea Grove clicks ✓ Mark Resolved once the change is live in BrightLocal). Every status change syncs live across all team members within ~15 seconds.
+            </div>
+
+            {/* Pending actions banner + Send digest */}
+            {(() => {
+              const unsentAlerts = allAlerts.filter(a => changeActions[a.id] && !actionsNotified[a.id] && !changeResolved[a.id]);
+              const unsentCount = unsentAlerts.length;
+              const unsentAccept = unsentAlerts.filter(a => changeActions[a.id] === "accept").length;
+              const unsentReject = unsentAlerts.filter(a => changeActions[a.id] === "reject").length;
+              if (queueCount === 0) return null;
+              return (
+                <div style={{background:unsentCount>0?"#FFFBEB":"#F0FDF4",border:"1px solid "+(unsentCount>0?"#FDE68A":"#BBF7D0"),borderRadius:10,padding:"14px 18px",marginBottom:14}}>
+                  <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                    <div style={{fontSize:20}}>{unsentCount>0?"📨":"✓"}</div>
+                    <div style={{flex:1,minWidth:200}}>
+                      <div style={{fontWeight:700,fontSize:13,color:unsentCount>0?"#854D0E":"#15803D"}}>
+                        {unsentCount > 0
+                          ? unsentCount + " flagged change" + (unsentCount!==1?"s":"") + " not yet sent to Idea Grove team"
+                          : "All " + queueCount + " flagged change" + (queueCount!==1?"s":"") + " sent to Idea Grove team"}
+                      </div>
+                      <div style={{fontSize:11,color:"#64748B",marginTop:3}}>
+                        {unsentCount>0
+                          ? unsentAccept + " new accept · " + unsentReject + " new reject"
+                          : (acceptedCount + " accept · " + rejectedCount + " reject")}
+                        {lastDigestSent && <span> · last sent {timeAgo(lastDigestSent)}</span>}
+                      </div>
+                    </div>
+                    {unsentCount > 0 && (
+                      <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                        <input
+                          type="text"
+                          placeholder="Your name (optional)"
+                          value={submitterName}
+                          onChange={e => persistSubmitterName(e.target.value)}
+                          style={{background:"#fff",border:"1px solid "+IG.border,borderRadius:7,padding:"7px 10px",fontSize:12,color:IG.navy,outline:"none",width:180}}
+                        />
+                        <button
+                          onClick={() => sendDigest(unsentAlerts)}
+                          disabled={digestStatus === "sending"}
+                          style={{padding:"8px 16px",borderRadius:7,background:digestStatus==="sending"?"#94A3B8":IG.navy,color:"#fff",border:"none",fontSize:12,fontWeight:700,cursor:digestStatus==="sending"?"wait":"pointer",textTransform:"uppercase",letterSpacing:"0.05em"}}
+                        >
+                          {digestStatus==="sending" ? "Sending…" : "📨 Send to Idea Grove"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {digestStatus === "success" && (
+                    <div style={{marginTop:10,padding:"8px 12px",background:"#DCFCE7",border:"1px solid #BBF7D0",borderRadius:7,fontSize:12,color:"#15803D",fontWeight:700}}>
+                      ✓ Digest emailed to standley@ideagrove.com
+                    </div>
+                  )}
+                  {digestStatus === "error" && (
+                    <div style={{marginTop:10,padding:"8px 12px",background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:7,fontSize:12,color:"#DC2626",fontWeight:700}}>
+                      Couldn't send. Please email standley@ideagrove.com directly.
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* Filter bar */}
+            <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginBottom:14}}>
+              <div style={{display:"flex",gap:3,background:"#F1F5F9",borderRadius:8,padding:3}}>
+                {[["pending","Needs Action"],["queued","Flagged"],["resolved","Resolved"],["all","All"]].map(([val,lbl])=>(
+                  <button key={val} onClick={()=>setChangeF(val)} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,border:"none",cursor:"pointer",textTransform:"uppercase",background:changeF===val?"#fff":"transparent",color:changeF===val?IG.navy:"#64748B"}}>
+                    {lbl}
+                    {val==="pending"&&pendingActions>0&&
+                      <span style={{marginLeft:6,background:unreviewedCritical>0?"#EF4444":"#D97706",color:"#fff",borderRadius:10,padding:"0 6px",fontSize:10}}>{pendingActions}</span>}
+                    {val==="queued"&&awaitingIGWork>0&&
+                      <span style={{marginLeft:6,background:"#3B82F6",color:"#fff",borderRadius:10,padding:"0 6px",fontSize:10}}>{awaitingIGWork}</span>}
+                    {val==="resolved"&&resolvedCount>0&&
+                      <span style={{marginLeft:6,background:"#16A34A",color:"#fff",borderRadius:10,padding:"0 6px",fontSize:10}}>{resolvedCount}</span>}
+                  </button>
+                ))}
+              </div>
+              <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                {["All","critical","watch","info"].map(p=>{
+                  const pm = p!=="All"?PRIORITY_META[p]:null;
+                  return (
+                    <button key={p} onClick={()=>setChangePF(p)} style={{padding:"5px 12px",borderRadius:20,fontSize:11,fontWeight:700,cursor:"pointer",border:"1px solid "+(changePF===p?(pm?.dot||IG.navy):IG.border),background:changePF===p?(pm?.badgeBg||IG.navy):"#fff",color:changePF===p?(pm?.badgeColor||"#fff"):"#475569"}}>
+                      {p==="All"?"All Priority":PRIORITY_META[p]?.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <input placeholder="Search…" value={changeS} onChange={e=>setChangeS(e.target.value)} style={{background:"#fff",border:"1px solid "+IG.border,borderRadius:8,padding:"7px 12px",fontSize:12,color:IG.navy,outline:"none",width:180}}/>
+              <select value={changeC} onChange={e=>setChangeC(e.target.value)} style={{background:"#fff",border:"1px solid "+IG.border,borderRadius:8,padding:"7px 10px",fontSize:12,color:IG.navy,outline:"none"}}>
+                {CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
+              </select>
+              <span style={{fontSize:11,color:IG.muted,marginLeft:"auto"}}>{filteredChanges.length} of {allAlerts.length} change{allAlerts.length!==1?"s":""}</span>
+            </div>
+
+            {/* Priority legend */}
+            <div style={{display:"flex",gap:20,marginBottom:14,flexWrap:"wrap"}}>
+              {Object.entries(PRIORITY_META).map(([key,pm])=>(
+                <div key={key} style={{display:"flex",alignItems:"center",gap:6,fontSize:11,color:"#64748B"}}>
+                  <span style={{width:8,height:8,borderRadius:"50%",background:pm.dot,display:"inline-block",flexShrink:0}}/>
+                  <span style={{fontWeight:700,color:pm.badgeColor}}>{pm.label}</span>
+                  <span>— {key==="critical"?"name, phone, website":key==="watch"?"address, hours, categories":"description, attributes"}</span>
+                </div>
+              ))}
+            </div>
+
+            {filteredChanges.length===0&&(
+              <div style={{background:"#F0FDF4",border:"1px solid #BBF7D0",borderRadius:12,padding:"48px",textAlign:"center"}}>
+                <div style={{fontSize:32,marginBottom:10}}>✓</div>
+                <div style={{fontWeight:700,fontSize:16,color:"#16A34A",marginBottom:4}}>
+                  {changeF==="pending"?"All caught up!":changeF==="queued"?"Nothing flagged yet":"No changes match this filter."}
+                </div>
+                <div style={{fontSize:13,color:"#64748B"}}>
+                  {changeF==="pending"?"No listing changes need your action right now.":"Try adjusting your filters."}
+                </div>
+              </div>
+            )}
+
+            {/* Change cards */}
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              {filteredChanges.map(a=>{
+                const loc = LOCATIONS.find(l=>l.id===a.locId);
+                const pm = PRIORITY_META[a.priority];
+                const sm = SOURCE_META[a.source] || {label:a.source, color:"#475569"};
+                const action = changeActions[a.id];
+                const note = changeNotes[a.id] || "";
+                const showNote = activeNoteId === a.id || note;
+                const isAccepted = action === "accept";
+                const isRejected = action === "reject";
+                const isResolved = !!changeResolved[a.id];
+                const cardBg = isResolved ? "#ECFDF5" : isAccepted ? "#F0FDF4" : isRejected ? "#FEF2F2" : pm.bg;
+                const cardBorder = isResolved ? "#10B981" : isAccepted ? "#86EFAC" : isRejected ? "#FCA5A5" : pm.border;
+                return (
+                  <div key={a.id} style={{background:cardBg,border:"1px solid "+cardBorder,borderRadius:10,padding:"14px 18px"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:7,flexWrap:"wrap",marginBottom:8}}>
+                      <span style={{display:"inline-flex",alignItems:"center",gap:4,padding:"2px 9px",borderRadius:20,background:pm.badgeBg,color:pm.badgeColor,fontSize:11,fontWeight:700,border:"1px solid "+pm.border}}>
+                        <span style={{width:5,height:5,borderRadius:"50%",background:pm.dot,display:"inline-block"}}/>
+                        {pm.label}
+                      </span>
+                      <span style={{fontSize:11,fontWeight:700,color:sm.color,background:sm.color+"15",padding:"2px 9px",borderRadius:20,border:"1px solid "+sm.color+"30"}}>{sm.label}</span>
+                      {loc&&<span style={{fontWeight:700,fontSize:12,color:IG.navy}}>{loc.name}</span>}
+                      {loc&&<CatPill cat={loc.category}/>}
+                      {isAccepted&&<span style={{background:"#16A34A",color:"#fff",borderRadius:10,padding:"2px 10px",fontSize:10,fontWeight:800,marginLeft:"auto"}}>✓ ACCEPTED</span>}
+                      {isRejected&&<span style={{background:"#DC2626",color:"#fff",borderRadius:10,padding:"2px 10px",fontSize:10,fontWeight:800,marginLeft:isAccepted?"0":"auto"}}>✗ REJECTED</span>}
+                      {isResolved&&<span style={{background:"#059669",color:"#fff",borderRadius:10,padding:"2px 10px",fontSize:10,fontWeight:800}} title={"Resolved in BrightLocal " + new Date(changeResolved[a.id]).toLocaleString()}>✓ RESOLVED</span>}
+                      {action && actionsNotified[a.id] && (
+                        <span style={{background:"#DBEAFE",color:"#1E40AF",borderRadius:10,padding:"2px 8px",fontSize:10,fontWeight:700}} title={"Sent to Idea Grove " + new Date(actionsNotified[a.id]).toLocaleString()}>
+                          📨 Sent
+                        </span>
+                      )}
+                      {action && !actionsNotified[a.id] && (
+                        <span style={{background:"#FEF3C7",color:"#854D0E",borderRadius:10,padding:"2px 8px",fontSize:10,fontWeight:700}}>
+                          Not yet sent
+                        </span>
+                      )}
+                    </div>
+
+                    <div style={{fontSize:13,fontWeight:800,color:IG.navy,marginBottom:6}}>
+                      {friendlyField(a.field)}
+                    </div>
+
+                    <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"flex-start",marginBottom:10}}>
+                      <div style={{background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:8,padding:"6px 12px",flex:1,minWidth:140}}>
+                        <div style={{fontSize:10,fontWeight:700,color:"#94A3B8",marginBottom:3,textTransform:"uppercase",letterSpacing:"0.08em"}}>Was</div>
+                        <div style={{fontSize:12,color:"#DC2626",fontWeight:600,wordBreak:"break-word",whiteSpace:"pre-line"}}>{formatVal(a.old_value)}</div>
+                      </div>
+                      <div style={{alignSelf:"center",fontSize:16,color:"#94A3B8",flexShrink:0}}>→</div>
+                      <div style={{background:"#F0FDF4",border:"1px solid #BBF7D0",borderRadius:8,padding:"6px 12px",flex:1,minWidth:140}}>
+                        <div style={{fontSize:10,fontWeight:700,color:"#94A3B8",marginBottom:3,textTransform:"uppercase",letterSpacing:"0.08em"}}>Now</div>
+                        <div style={{fontSize:12,color:"#16A34A",fontWeight:600,wordBreak:"break-word",whiteSpace:"pre-line"}}>{formatVal(a.value)}</div>
+                      </div>
+                    </div>
+
+                    {a.time&&<div style={{fontSize:11,color:"#94A3B8",marginBottom:10}}>Detected {a.time}</div>}
+
+                    {showNote && (
+                      <div style={{marginBottom:10}}>
+                        <label style={{fontSize:10,fontWeight:700,color:IG.muted,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:4,display:"block"}}>
+                          Note for Idea Grove team {action ? "(optional)" : ""}
+                        </label>
+                        <textarea value={note} onChange={e=>setNote(a.id, e.target.value)} rows={2} placeholder="Add context (e.g., 'I made this change in Google — please approve' or 'wrong address, should be 123 Main St')" style={{width:"100%",background:"#fff",border:"1px solid "+IG.border,borderRadius:6,padding:"7px 10px",fontSize:12,color:IG.navy,outline:"none",fontFamily:"inherit"}}/>
+                      </div>
+                    )}
+
+                    <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+                      {!action && (
+                        <>
+                          <button onClick={()=>{ setAction(a.id,"accept"); setActiveNoteId(a.id); }} style={{padding:"7px 14px",borderRadius:7,background:"#16A34A",color:"#fff",border:"none",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                            ✓ Accept Change
+                          </button>
+                          <button onClick={()=>{ setAction(a.id,"reject"); setActiveNoteId(a.id); }} style={{padding:"7px 14px",borderRadius:7,background:"#DC2626",color:"#fff",border:"none",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                            ✗ Reject Change
+                          </button>
+                          {!showNote && (
+                            <button onClick={()=>setActiveNoteId(a.id)} style={{padding:"7px 12px",borderRadius:7,background:"#fff",color:IG.navy,border:"1px solid "+IG.border,fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                              + Add note
+                            </button>
+                          )}
+                        </>
+                      )}
+                      {action && !isResolved && (
+                        <>
+                          <span style={{fontSize:11,color:IG.muted,fontWeight:600}}>
+                            {isAccepted ? "Flagged to keep — awaiting Idea Grove approval in BrightLocal" : "Flagged to revert — awaiting Idea Grove rejection in BrightLocal"}
+                          </span>
+                          <button onClick={() => markResolved(a.id)} style={{padding:"7px 13px",borderRadius:7,background:"#059669",color:"#fff",border:"none",fontSize:12,fontWeight:700,cursor:"pointer",marginLeft:"auto"}}>
+                            ✓ Mark Resolved
+                          </button>
+                          <button onClick={()=>{ clearAction(a.id); setActiveNoteId(null); }} style={{padding:"6px 12px",borderRadius:7,background:"#fff",color:IG.navy,border:"1px solid "+IG.border,fontSize:11,fontWeight:700,cursor:"pointer"}}>
+                            Undo
+                          </button>
+                        </>
+                      )}
+                      {action && isResolved && (
+                        <>
+                          <span style={{fontSize:11,color:"#059669",fontWeight:700}}>
+                            ✓ Resolved in BrightLocal {timeAgo(changeResolved[a.id])}
+                          </span>
+                          <button onClick={() => unmarkResolved(a.id)} style={{padding:"6px 12px",borderRadius:7,background:"#fff",color:IG.navy,border:"1px solid "+IG.border,fontSize:11,fontWeight:700,cursor:"pointer",marginLeft:"auto"}}>
+                            Unmark Resolved
+                          </button>
+                        </>
+                      )}
+                      {loc?.dashboard && (
+                        <a href={loc.dashboard} target="_blank" rel="noopener noreferrer" style={{padding:"7px 13px",borderRadius:7,background:IG.navy,color:"#fff",fontSize:12,fontWeight:700,marginLeft:!action?"auto":"0"}}>
+                          View Dashboard ↗
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        {/* ══════════ REVIEW INBOX TAB ══════════ */}
+        {tab==="inbox"&&(
+          <>
+            <div style={{marginBottom:14}}>
+              <h2 style={{fontWeight:800,fontSize:22,margin:"0 0 4px"}}>Review Inbox</h2>
+              <p style={{fontSize:13,color:"#64748B",margin:0}}>{unresponded>0?unresponded+" review"+(unresponded!==1?"s":"")+" from the last "+NEEDS_RESP_DAYS+" days haven't been marked responded.":"All caught up."}</p>
+            </div>
+            <div style={{background:"#EFF6FF",border:"1px solid #BFDBFE",borderRadius:8,padding:"10px 14px",marginBottom:14,fontSize:12,color:"#1E3A8A"}}>
+              <strong>How this works:</strong> BrightLocal's API doesn't expose per-review response status, so this inbox shows every review from the last {NEEDS_RESP_DAYS} days that you haven't marked responded here. After replying (in Google or BrightLocal), click <strong>✓ Mark Responded</strong> to clear it. Use <strong>Mark all visible as responded</strong> to clear backlog instantly.
+            </div>
+            <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginBottom:16}}>
+              <div style={{display:"flex",gap:3,background:"#F1F5F9",borderRadius:8,padding:3}}>
+                {[["new","Needs Response"],["all","All"],["responded","Responded"]].map(([val,lbl])=>(
+                  <button key={val} onClick={()=>setInboxF(val)} style={{padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:700,border:"none",cursor:"pointer",textTransform:"uppercase",background:inboxF===val?"#fff":"transparent",color:inboxF===val?IG.navy:"#64748B"}}>
+                    {lbl}{val==="new"&&unresponded>0&&<span style={{marginLeft:6,background:"#EF4444",color:"#fff",borderRadius:10,padding:"0 6px",fontSize:10}}>{unresponded}</span>}
+                  </button>
+                ))}
+              </div>
+              <input placeholder="Search…" value={inboxS} onChange={e=>setInboxS(e.target.value)} style={{background:"#fff",border:"1px solid "+IG.border,borderRadius:8,padding:"7px 12px",fontSize:12,color:IG.navy,outline:"none",width:200}}/>
+              <select value={inboxC} onChange={e=>setInboxC(e.target.value)} style={{background:"#fff",border:"1px solid "+IG.border,borderRadius:8,padding:"7px 10px",fontSize:12,color:IG.navy,outline:"none"}}>
+                {CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
+              </select>
+              <span style={{fontSize:11,color:IG.muted,marginLeft:"auto"}}>{inboxReviews.length} reviews</span>
+              {inboxF==="new" && inboxReviews.length > 0 && (
+                <button onClick={()=>{
+                  if (!window.confirm("Mark all " + inboxReviews.length + " visible reviews as responded? This won't change anything on BrightLocal — it just clears them from this inbox.")) return;
+                  const u = Object.assign({}, responded);
+                  inboxReviews.forEach(r => { u[r.id] = true; });
+                  setResponded(u);
+                  try { localStorage.setItem("standley-responded", JSON.stringify(u)); } catch(e){}
+                }} style={{padding:"6px 12px",borderRadius:7,background:IG.navy,color:"#fff",border:"none",fontSize:11,fontWeight:700,cursor:"pointer",textTransform:"uppercase",letterSpacing:"0.05em"}}>
+                  ✓ Mark all visible as responded
+                </button>
+              )}
+            </div>
+            {inboxReviews.length===0&&(
+              <div style={{background:"#F0FDF4",border:"1px solid #BBF7D0",borderRadius:12,padding:"48px",textAlign:"center"}}>
+                <div style={{fontSize:32,marginBottom:10}}>🎉</div>
+                <div style={{fontWeight:700,fontSize:16,color:"#16A34A",marginBottom:4}}>All caught up!</div>
+                <div style={{fontSize:13,color:"#64748B"}}>No reviews need a response right now.</div>
+              </div>
+            )}
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {inboxReviews.map(r=>{
+                const loc = LOCATIONS.find(l => l.id === r.locId);
+                const isResponded = !!responded[r.id];
+                const needsResp = reviewNeedsResp(r);
+                const ru = loc && loc.dashboard ? rmUrl(loc.dashboard) : null;
+                const src = r.source || "google";
+                const srcColor = src === "google" ? "#1D4ED8" : src === "yelp" ? "#DC2626" : src === "facebook" ? "#1877F2" : "#475569";
+                const srcLabel = src ? (src.charAt(0).toUpperCase() + src.slice(1)) : "Google";
+                return (
+                  <div key={r.id} style={{background:isResponded?"#F0FDF4":needsResp?"#FEF2F2":"#fff",border:"1px solid "+(isResponded?"#BBF7D0":needsResp?"#FECACA":IG.border),borderRadius:10,padding:"16px 18px"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,flexWrap:"wrap"}}>
+                      <div style={{flex:1,minWidth:200}}>
+                        <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:6}}>
+                          <span style={{fontWeight:800,fontSize:14,color:IG.navy}}>{r.reviewer || "Anonymous"}</span>
+                          <Stars val={r.stars || 0} size={12}/>
+                          <span style={{fontSize:11,fontWeight:700,color:srcColor,background:srcColor+"15",padding:"1px 8px",borderRadius:10,border:"1px solid "+srcColor+"30"}}>{srcLabel}</span>
+                          {loc&&<CatPill cat={loc.category}/>}
+                          {r.isNew&&needsResp&&<span style={{background:"#FEE2E2",color:"#DC2626",borderRadius:10,padding:"1px 8px",fontSize:10,fontWeight:800}}>NEW</span>}
+                          {needsResp&&!r.isNew&&<span style={{background:"#FEF3C7",color:"#92400E",borderRadius:10,padding:"1px 8px",fontSize:10,fontWeight:800}}>UNRESPONDED</span>}
+                          {isResponded&&<span style={{background:"#DCFCE7",color:"#16A34A",borderRadius:10,padding:"1px 8px",fontSize:10,fontWeight:800}}>✓ RESPONDED</span>}
+                        </div>
+                        <div style={{fontSize:11,color:"#64748B",marginBottom:8}}>{loc && loc.name} · {r.date}</div>
+                        <div style={{fontSize:13,color:"#374151",lineHeight:1.6}}>{r.body || ""}</div>
+                      </div>
+                      <div style={{display:"flex",gap:6,flexShrink:0,alignItems:"flex-start",flexWrap:"wrap"}}>
+                        {ru&&<a href={ru} target="_blank" rel="noopener noreferrer" style={{padding:"7px 13px",borderRadius:7,background:IG.navy,color:"#fff",fontSize:12,fontWeight:700}}>Manage Reviews ↗</a>}
+                        {!isResponded&&<button onClick={()=>markR(r.id)} style={{padding:"7px 13px",borderRadius:7,background:"#F0FDF4",color:"#16A34A",border:"1px solid #BBF7D0",fontSize:12,fontWeight:700,cursor:"pointer"}}>✓ Mark Responded</button>}
+                        {!isResponded&&<button onClick={()=>markD(r.id)} style={{padding:"7px 10px",borderRadius:7,background:"#F1F5F9",color:"#64748B",border:"1px solid "+IG.border,fontSize:13,cursor:"pointer"}}>✕</button>}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        {/* ══════════ REQUESTS TAB ══════════ */}
+        {tab==="requests"&&(
+          <>
+            <div style={{marginBottom:20}}>
+              <h2 style={{fontWeight:800,fontSize:22,margin:"0 0 4px"}}>Location Requests</h2>
+              <p style={{fontSize:13,color:"#64748B",margin:0}}>
+                Let the Idea Grove team know about upcoming changes, corrections, or new requests. Submissions go directly to standley@ideagrove.com.
+              </p>
+            </div>
+            <RequestForm />
+          </>
+        )}
+
+        {/* Footer */}
+        <div style={{marginTop:32,paddingTop:16,borderTop:"1px solid "+IG.border,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+          <span style={{fontSize:11,color:IG.muted}}>STANDLEY WIRELESS · MANAGED BY IDEAGROVE</span>
+          <span style={{fontSize:11,color:IG.muted}}>{LOCATIONS.length} locations · OK · TX</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
