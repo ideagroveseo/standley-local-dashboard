@@ -558,7 +558,11 @@ function App() {
       let avgRank = 0;
       if (lrtRes?.rankings?.by_keyword?.length) {
         const ranks = lrtRes.rankings.by_keyword
-          .map(k => k.results?.google?.[0]?.rank || 0)
+          .map(k => {
+            const gp = k.results?.['google-places']?.[0]?.rank || 0;
+            const g  = k.results?.google?.[0]?.rank || 0;
+            return gp || g;
+          })
           .filter(r => r > 0);
         avgRank = ranks.length ? Math.round(ranks.reduce((a,b)=>a+b,0)/ranks.length) : 0;
       }
