@@ -211,17 +211,18 @@ function formatVal(val) {
 
 // ── Data ────────────────────────────────────────────────────────────────────
 const LOCATIONS = [
-  { id:1, category:"OK", name:"Ardmore, OK",        locationId:4067961, dashboard:"https://www.local-marketing-reports.com/location-dashboard/52b811b626f65f7d1677581ba111086ca01e4886/summary" },
-  { id:2, category:"OK", name:"Chickasha, OK",      locationId:4067962, dashboard:"https://www.local-marketing-reports.com/location-dashboard/b28ef91b2bfd4c9ca2d5f622eb5eccfeb3cec159/summary" },
-  { id:3, category:"OK", name:"Oklahoma City, OK",  locationId:4067963, dashboard:"https://www.local-marketing-reports.com/location-dashboard/a17fb3f3caa87d1face41920bf268cf8d1c02343/view" },
-  { id:4, category:"OK", name:"Enid, OK",           locationId:4067964, dashboard:"https://www.local-marketing-reports.com/location-dashboard/d315b71732ac1384f6ce6c37ba8fbe1c4c178116/summary" },
-  { id:5, category:"OK", name:"Broken Arrow, OK",   locationId:4067966, dashboard:"https://www.local-marketing-reports.com/location-dashboard/41f8dda421c004ee064f984fd10bef3fc3c50f72/view" },
-  { id:6, category:"OK", name:"Lawton, OK",         locationId:4067967, dashboard:"https://www.local-marketing-reports.com/location-dashboard/435f70ed0187b0642b6b2202a8f6583536bb7bd2/view" },
-  { id:7, category:"TX", name:"Plano, TX",          locationId:null,    dashboard:"https://www.local-marketing-reports.com/location-dashboard/cb74df37057b3c8b70500fb0de0e2a749d230c4a/view" },
-  { id:8, category:"TX", name:"Richardson, TX",     locationId:null,    dashboard:null },
-  { id:9, category:"TX", name:"Richardson, TX (2)", locationId:null,    dashboard:null },
+  { id:1, category:"OK", name:"Ardmore, OK",       locationId:4067961, dashboard:"https://www.local-marketing-reports.com/location-dashboard/52b811b626f65f7d1677581ba111086ca01e4886/summary" },
+  { id:2, category:"OK", name:"Chickasha, OK",     locationId:4067962, dashboard:"https://www.local-marketing-reports.com/location-dashboard/b28ef91b2bfd4c9ca2d5f622eb5eccfeb3cec159/summary" },
+  { id:3, category:"OK", name:"Oklahoma City, OK", locationId:4067963, dashboard:"https://www.local-marketing-reports.com/location-dashboard/a17fb3f3caa87d1face41920bf268cf8d1c02343/view" },
+  { id:4, category:"OK", name:"Enid, OK",          locationId:4067964, dashboard:"https://www.local-marketing-reports.com/location-dashboard/d315b71732ac1384f6ce6c37ba8fbe1c4c178116/summary" },
+  { id:5, category:"OK", name:"Broken Arrow, OK",  locationId:4067966, dashboard:"https://www.local-marketing-reports.com/location-dashboard/41f8dda421c004ee064f984fd10bef3fc3c50f72/view" },
+  { id:6, category:"OK", name:"Lawton, OK",        locationId:4067967, dashboard:"https://www.local-marketing-reports.com/location-dashboard/435f70ed0187b0642b6b2202a8f6583536bb7bd2/view" },
+  { id:7, category:"TX", name:"Plano, TX",         locationId:null,    dashboard:"https://www.local-marketing-reports.com/location-dashboard/cb74df37057b3c8b70500fb0de0e2a749d230c4a/view" },
 ];
-const REPORT_MAP = {};
+const REPORT_MAP = {
+  4067961:632732, 4067962:632736, 4067963:632737,
+  4067964:632739, 4067966:632741, 4067967:632744,
+};
 const LRT_REPORT_MAP = {};
 const CATEGORIES = ["All","OK","TX"];
 const CACHE_KEY = "standley-cache-v10";
@@ -1463,7 +1464,7 @@ function App() {
 
         {/* Footer */}
         <div style={{marginTop:32,paddingTop:16,borderTop:"1px solid "+IG.border,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
-          <span style={{fontSize:11,color:IG.muted}}>STANDLEY WIRELESS · MANAGED BY IDEAGROVE</span>
+          <span style={{fontSize:11,color:IG.muted}}>STANDLEY SYSTEMS · MANAGED BY IDEAGROVE</span>
           <span style={{fontSize:11,color:IG.muted}}>{LOCATIONS.length} locations · OK · TX</span>
         </div>
       </div>
