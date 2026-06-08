@@ -1,0 +1,9 @@
+{
+  "name": "standley-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Standley Wireless location intelligence dashboard — Netlify Functions for BrightLocal proxy and shared state",
+  "dependencies": {
+    "@netlify/blobs": "^7.4.0"
+  }
+}
